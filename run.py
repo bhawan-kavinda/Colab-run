@@ -76,8 +76,17 @@ def configure_ssh(pubkey):
             f.write(pubkey.strip() + "\n")
         run("chmod 600 /root/.ssh/authorized_keys")
 
+    # Command-line -o options override any sshd_config.d/*.conf values
+    # (some images ship "PasswordAuthentication no" in an included file)
     run("pkill sshd", check=False)
-    run("/usr/sbin/sshd")
+    run(
+        "/usr/sbin/sshd "
+        "-o PasswordAuthentication=yes "
+        "-o PermitRootLogin=yes "
+        "-o PubkeyAuthentication=yes "
+        "-o UsePAM=yes "
+        "-o ListenAddress=127.0.0.1"
+    )
     return password
 
 
