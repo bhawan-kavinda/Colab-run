@@ -71,8 +71,23 @@ def install_packages():
         sys.exit(1)
 
 
+def set_password():
+    """Ask the user to set the Termux login password (interactive)."""
+    print("\nSet a password for SSH login (typing is hidden).")
+    while True:
+        result = subprocess.run(["passwd"])  # uses the terminal directly
+        if result.returncode == 0:
+            print("Password set.\n")
+            return
+        retry = input("Password was not set. Try again? [Y/n]: ").strip().lower()
+        if retry == "n":
+            print("Continuing without changing the password.\n")
+            return
+
+
 def configure_ssh():
     print("[3/4] Configuring SSH for Termux...")
+    set_password()
 
     ssh_dir = os.path.expanduser("~/.ssh")
     os.makedirs(ssh_dir, exist_ok=True)
@@ -133,7 +148,7 @@ def main():
     )
     print(f"\nHostname : {host}")
     print(f"Username : {user}")
-    print("Password : run `passwd` once in Termux to set one (if not already set)")
+    print("Password : the one you just entered")
     print(f"{line}\n")
     print("Keep this script running.")
 
