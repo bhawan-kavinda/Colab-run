@@ -2,24 +2,28 @@
 """
 Termux -> OpenSSH + Cloudflare quick tunnel.
 Usage (in Termux):
-    python run.py
+    python runt.py
 """
 
-import argparse
+import getpass
 import os
 import re
-import secrets
+import shutil
 import subprocess
 import sys
 import time
 
-LOG_FILE = "/tmp/cloudflared.log"
-# Termux uses aarch64 (ARM64) architecture typically
+# Termux has no /tmp, so use $PREFIX/tmp instead
+PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
+TMP_DIR = os.path.join(PREFIX, "tmp")
+LOG_FILE = os.path.join(TMP_DIR, "cloudflared.log")
+
+# Fallback binary (only used if `pkg install cloudflared` fails)
 CLOUDFLARED_URL = (
     "https://github.com/cloudflare/cloudflared/releases/latest/download/"
     "cloudflared-linux-arm64"
 )
-CLOUDFLARED_BIN = os.path.expanduser("~/.local/bin/cloudflared")
+FALLBACK_BIN = os.path.expanduser("~/.local/bin/cloudflared")
 
 
 def run(cmd, check=True):
@@ -33,47 +37,63 @@ def run(cmd, check=True):
     )
 
 
+def find_cloudflared():
+    """Return path to a usable cloudflared binary, or None."""
+    path = shutil.which("cloudflared")
+    if path:
+        return path
+    if os.path.exists(FALLBACK_BIN):
+        return FALLBACK_BIN
+    return None
+
+
 def install_packages():
     print("[1/4] Checking and installing packages in Termux...")
-    # Update and install openssh and cloudflared via Termux pkg
+    os.makedirs(TMP_DIR, exist_ok=True)
     subprocess.run("pkg update -y && pkg install -y openssh termux-services", shell=True)
-    
-    os.makedirs(os.path.dirname(CLOUDFLARED_BIN), exist_ok=True)
-    if not os.path.exists(CLOUDFLARED_BIN):
-        print("[2/4] Installing cloudflared for Termux...")
-        subprocess.run(f"curl -fsSL -o {CLOUDFLARED_BIN} {CLOUDFLARED_URL}", shell=True)
-        subprocess.run(f"chmod +x {CLOUDFLARED_BIN}", shell=True)
-    else:
+
+    if find_cloudflared():
         print("[2/4] cloudflared already installed.")
+        return
+
+    print("[2/4] Installing cloudflared for Termux...")
+    # Preferred: Termux's own package (works properly with Android DNS)
+    subprocess.run("pkg install -y cloudflared", shell=True)
+    if find_cloudflared():
+        return
+
+    # Fallback: download the official arm64 binary
+    os.makedirs(os.path.dirname(FALLBACK_BIN), exist_ok=True)
+    subprocess.run(f"curl -fsSL -o {FALLBACK_BIN} {CLOUDFLARED_URL}", shell=True)
+    subprocess.run(f"chmod +x {FALLBACK_BIN}", shell=True)
+    if not find_cloudflared():
+        print("Could not install cloudflared.")
+        sys.exit(1)
 
 
-def configure_ssh(pubkey):
+def configure_ssh():
     print("[3/4] Configuring SSH for Termux...")
-    password = secrets.token_urlsafe(12)
 
     ssh_dir = os.path.expanduser("~/.ssh")
     os.makedirs(ssh_dir, exist_ok=True)
     run(f"chmod 700 {ssh_dir}")
 
-    # Set password for current Termux user
-    run(f"echo 'u0_a...:{password}' | passwd", check=False) # Termux handles user password differently, or we can use standard passwd
-    
     # Kill any existing sshd
     run("pkill sshd", check=False)
-    
-    # Start Termux sshd (Termux openssh runs on port 8022 by default)
+
+    # Termux sshd listens on port 8022 by default
     print("Starting SSH server on Termux...")
     subprocess.Popen(["sshd"])
-    
-    return password
+    time.sleep(1)
 
 
 def start_tunnel():
     print("[4/4] Starting Cloudflare tunnel...")
+    binary = find_cloudflared()
+    os.makedirs(TMP_DIR, exist_ok=True)
     log = open(LOG_FILE, "w")
-    # Termux sshd runs on port 8022 by default
     proc = subprocess.Popen(
-        [CLOUDFLARED_BIN, "tunnel", "--url", "ssh://localhost:8022", "--no-autoupdate"],
+        [binary, "tunnel", "--url", "ssh://localhost:8022", "--no-autoupdate"],
         stdout=log,
         stderr=log,
     )
@@ -83,9 +103,11 @@ def start_tunnel():
         time.sleep(1)
         if proc.poll() is not None:
             print("cloudflared exited unexpectedly. Log:")
-            print(open(LOG_FILE).read())
+            with open(LOG_FILE) as f:
+                print(f.read())
             sys.exit(1)
-        match = pattern.search(open(LOG_FILE).read())
+        with open(LOG_FILE) as f:
+            match = pattern.search(f.read())
         if match:
             return proc, match.group(1)
 
@@ -96,16 +118,22 @@ def start_tunnel():
 
 def main():
     install_packages()
-    password = configure_ssh("")
+    configure_ssh()
     proc, host = start_tunnel()
 
+    user = getpass.getuser()
     line = "=" * 56
     print(f"\n{line}")
     print(" READY - Connect from another device/PC")
     print(line)
-    print(f"\n# Connect command:")
-    print(f'ssh -p 8022 -o ProxyCommand="cloudflared access ssh --hostname {host}" localhost')
+    print("\n# Connect command:")
+    print(
+        f'ssh -p 8022 -o ProxyCommand="cloudflared access ssh --hostname {host}" '
+        f"{user}@localhost"
+    )
     print(f"\nHostname : {host}")
+    print(f"Username : {user}")
+    print("Password : run `passwd` once in Termux to set one (if not already set)")
     print(f"{line}\n")
     print("Keep this script running.")
 
