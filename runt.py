@@ -16,6 +16,8 @@ import time
 # Termux has no /tmp, so use $PREFIX/tmp instead
 PREFIX = os.environ.get("PREFIX", "/data/data/com.termux/files/usr")
 TMP_DIR = os.path.join(PREFIX, "tmp")
+# Go programs (cloudflared) can't find Termux's CA certs on their own
+CA_CERT = os.path.join(PREFIX, "etc", "tls", "cert.pem")
 LOG_FILE = os.path.join(TMP_DIR, "cloudflared.log")
 
 # Fallback binary (only used if `pkg install cloudflared` fails)
@@ -50,7 +52,7 @@ def find_cloudflared():
 def install_packages():
     print("[1/4] Checking and installing packages in Termux...")
     os.makedirs(TMP_DIR, exist_ok=True)
-    subprocess.run("pkg update -y && pkg install -y openssh termux-services", shell=True)
+    subprocess.run("pkg update -y && pkg install -y openssh termux-services ca-certificates", shell=True)
 
     if find_cloudflared():
         print("[2/4] cloudflared already installed.")
@@ -107,10 +109,14 @@ def start_tunnel():
     binary = find_cloudflared()
     os.makedirs(TMP_DIR, exist_ok=True)
     log = open(LOG_FILE, "w")
+    env = os.environ.copy()
+    if os.path.exists(CA_CERT):
+        env["SSL_CERT_FILE"] = CA_CERT
     proc = subprocess.Popen(
         [binary, "tunnel", "--url", "ssh://localhost:8022", "--no-autoupdate"],
         stdout=log,
         stderr=log,
+        env=env,
     )
 
     pattern = re.compile(r"https://([a-z0-9-]+\.trycloudflare\.com)")
@@ -141,11 +147,16 @@ def main():
     print(f"\n{line}")
     print(" READY - Connect from another device/PC")
     print(line)
-    print("\n# Connect command:")
+    print("\n# Connect command (needs cloudflared installed on the PC):")
     print(
-        f'ssh -p 8022 -o ProxyCommand="cloudflared access ssh --hostname {host}" '
-        f"{user}@localhost"
+        f'ssh -o ProxyCommand="cloudflared access ssh --hostname %h" '
+        f"{user}@{host}"
     )
+    print("\n# Or add this to ~/.ssh/config on the PC, then just run: ssh termux")
+    print("Host termux")
+    print(f"    HostName {host}")
+    print(f"    User {user}")
+    print("    ProxyCommand cloudflared access ssh --hostname %h")
     print(f"\nHostname : {host}")
     print(f"Username : {user}")
     print("Password : the one you just entered")
